@@ -1,0 +1,20 @@
+{
+    "openai":
+    {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "model": "gpt-3.5-turbo",
+        "system": "You are a helpful assistant."
+    },
+    "discord":
+    {
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "max_age": 3600,
+        "file_size_max": 1047552
+    },
+    "gmail":
+    {
+        "email":"bot.email.addr@gmail.com",
+        "password":"password"
+    }
+}
