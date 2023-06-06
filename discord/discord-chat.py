@@ -125,6 +125,13 @@ class Config:
         with open(config_file, "r") as f:
             self.config = json.load(f)
 
+        self.config_file = config_file
+
+    def __sync(self) -> None:
+
+        with open(self.config_file, "w+") as f:
+            f.write(json.dumps(self.config, indent=4))
+
     def get(self, component: str, key: str, default: Optional[str] = None) -> str:
 
         if (component in self.config):
@@ -166,6 +173,8 @@ class Config:
             self.config[component][key] = value
         else:
             raise ConfigNotFound(f'component "{key}" is not defined')
+
+        self.__sync()
 
 
 class ChatApi:
@@ -256,6 +265,8 @@ class ChatApi:
 
                 if ("choices" in data):
                     message = data["choices"][0]["message"]["content"]
+                elif ("error" in data):
+                    message = data["error"]["message"]
 
         return ChatResponse(create_ts, response_ts, id, message)
 
