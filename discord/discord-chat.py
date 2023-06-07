@@ -12,6 +12,8 @@ from typing import Callable, Awaitable
 from datetime import datetime
 import smtplib
 import asyncio
+import openai
+import tempfile
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -74,6 +76,19 @@ class ConfigNotFound(Exception):
 
 class ChatModelNotFound(Exception):
     pass
+
+
+class HttpStatusError(Exception):
+    pass
+
+
+async def download_url(url: str) -> bytes:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                return await resp.read()
+
+            raise HttpStatusError(f"status={resp.status}")
 
 
 class History:
@@ -177,9 +192,7 @@ class Config:
         self.__sync()
 
 
-class ChatApi:
-
-    # url: str, key: str, model: str, system: str, temperature: float = 0.3) -> None:
+class AIApi:
     def __init__(self, config: Config) -> None:
 
         self.known_models = ["gpt-3.5-turbo",
@@ -195,6 +208,8 @@ class ChatApi:
         self.stats = ChatStats()
         self.stats_lock = asyncio.Lock()
         self.config = config
+
+        openai.api_key = self.key
 
     def __str__(self) -> str:
         return f"model={self.model} system={self.system}"
@@ -222,17 +237,25 @@ class ChatApi:
         config["max_prompt"] = self.max_prompt
         return config
 
+    async def image(self, prompt: str, num: int = 2, size: str = "1024x1024") -> List[bytes]:
+
+        images = []
+
+        comp = await openai.Image.acreate(prompt=prompt, n=num, size=size)
+
+        resp = comp.to_dict()  # type: ignore
+
+        if ("data" in resp):
+            for url in resp["data"]:
+                images.append(await download_url(url.url))
+
+        return images
+
     async def chat(self, history: List[ChatHistory], user: Optional[str] = None) -> ChatResponse:
 
-        params = {}
-        params["model"] = self.model
         messages = [
             {"role": "system", "content": self.system}
         ]
-        params["messages"] = messages
-
-        if (user is not None):
-            params["user"] = user
 
         history = history[-self.max_prompt:]
 
@@ -240,33 +263,34 @@ class ChatApi:
             message = {"role": h.role, "content": h.content}
             messages.append(message)
 
-        headers = {"Content-Type": "application/json",
-                   "Authorization": f"Bearer {self.key}"}
-
         create_ts = time.time()
+
+        completion = await openai.ChatCompletion.acreate(model=self.model,
+                                                         temperature=self.temperature,
+                                                         messages=messages)
+
+        response_ts = time.time()
+
+        data = completion.to_dict()  # type: ignore
+
         id = ""
         message = ""
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(self.url, headers=headers, json=params) as resp:
-                data = await resp.json()
-                response_ts = time.time()
+        if ("usage" in data):
+            usage = data["usage"]
+            prompts = usage["prompt_tokens"]
+            completions = usage["completion_tokens"]
 
-                if ("usage" in data):
-                    usage = data["usage"]
-                    prompts = usage["prompt_tokens"]
-                    completions = usage["completion_tokens"]
+            async with self.stats_lock:
+                self.stats.update(prompts, completions)
 
-                    async with self.stats_lock:
-                        self.stats.update(prompts, completions)
+        if ("id" in data):
+            id = data["id"]
 
-                if ("id" in data):
-                    id = data["id"]
-
-                if ("choices" in data):
-                    message = data["choices"][0]["message"]["content"]
-                elif ("error" in data):
-                    message = data["error"]["message"]
+        if ("choices" in data):
+            message = data["choices"][0]["message"]["content"]
+        elif ("error" in data):
+            message = data["error"]["message"]
 
         return ChatResponse(create_ts, response_ts, id, message)
 
@@ -280,9 +304,9 @@ class ChatApi:
 
 class ChatDiscord(discord.Client):
 
-    def __init__(self, chat: ChatApi, config: Config, *args, **kwargs) -> None:
+    def __init__(self, ai: AIApi, config: Config, *args, **kwargs) -> None:
 
-        self.chat = chat
+        self.ai = ai
         self.bot_token = config.get("discord", "token")
         self.start_time = time.time()
         self.max_age = config.get_int("discord", "max_age")
@@ -305,7 +329,8 @@ class ChatDiscord(discord.Client):
             CommandHandler("model", self.cmd_model, "Get and set model"),
             CommandHandler("models", self.cmd_models, "List models"),
             CommandHandler("code", self.cmd_code, "Switch to code model"),
-            CommandHandler("chat", self.cmd_chat, "Switch to chat model")
+            CommandHandler("chat", self.cmd_chat, "Switch to chat model"),
+            CommandHandler("image", self.cmd_image, "Generate an image"),
         ]
 
         super().__init__(*args, **kwargs)
@@ -323,17 +348,44 @@ class ChatDiscord(discord.Client):
     ############################################################################
 
     ##################
+    # IMAGE
+    ##################
+    async def cmd_image(self, msg: Message) -> str:
+
+        i = 0
+
+        prompt = msg.content
+
+        for img in await self.ai.image(prompt):
+
+            with tempfile.TemporaryDirectory(prefix="openai_image_") as td:
+
+                tmp_file = os.path.join(td, "image.png")
+
+                with open(tmp_file, "wb+") as f:
+                    f.write(img)
+                    f.flush()
+                    f.seek(0)
+
+                    file = discord.File(f)
+                    await msg.channel.send(file=file)
+
+            i += 1
+
+        return ""
+    ##################
     # CODE
     ##################
+
     async def cmd_code(self, msg: Message) -> str:
-        self.chat.set_model(GPT_CODE_MODEL)
+        self.ai.set_model(GPT_CODE_MODEL)
         return f"Changed model to `{GPT_CODE_MODEL}`"
 
     ##################
     # CHAT
     ##################
     async def cmd_chat(self, msg: Message) -> str:
-        self.chat.set_model(GPT_CHAT_MODEL)
+        self.ai.set_model(GPT_CHAT_MODEL)
         return f"Changed model to `{GPT_CHAT_MODEL}`"
 
     ##################
@@ -342,10 +394,10 @@ class ChatDiscord(discord.Client):
     async def cmd_model(self, msg: Message) -> str:
 
         if (0 == len(msg.content)):
-            self.chat.set_model(msg.content)
+            self.ai.set_model(msg.content)
             response = f"Model changed to {msg.content}"
         else:
-            model = self.chat.get_model()
+            model = self.ai.get_model()
             response = f"Current model is `{model}`"
 
         return response
@@ -357,7 +409,7 @@ class ChatDiscord(discord.Client):
 
         response = "Models:\n"
 
-        for m in self.chat.get_known_models():
+        for m in self.ai.get_known_models():
             response += f"* `{m}`\n"
 
         return response
@@ -367,7 +419,7 @@ class ChatDiscord(discord.Client):
     ##################
     async def cmd_history(self, msg: Message) -> str:
 
-        history = await self.history.get(msg.channel.id, self.chat.max_prompt)
+        history = await self.history.get(msg.channel.id, self.ai.max_prompt)
 
         if (history == []):
             return "Nothing to see..."
@@ -390,7 +442,7 @@ class ChatDiscord(discord.Client):
     ##################
     async def cmd_stats(self, msg: Message) -> str:
 
-        s = await self.chat.get_stats()
+        s = await self.ai.get_stats()
 
         total = s.prompt_tokens + s.completion_tokens
 
@@ -496,7 +548,7 @@ class ChatDiscord(discord.Client):
     async def cmd_config(self, msg: Message) -> str:
 
         config = {}
-        config["chat"] = self.chat.to_dict()
+        config["chat"] = self.ai.to_dict()
         config["discord"] = self.to_dict()
 
         config_json = json.dumps(config, indent=4)
@@ -594,10 +646,10 @@ class ChatDiscord(discord.Client):
             await self.history.add(msg.channel.id, "user", content)
 
             history = await self.history.get(msg.channel.id,
-                                             self.chat.max_prompt)
+                                             self.ai.max_prompt)
 
             if (len(history) > 0):
-                chat = await self.chat.chat(history, msg.author.name)
+                chat = await self.ai.chat(history, msg.author.name)
 
                 await self.history.add(msg.channel.id,
                                        "assistant",
@@ -650,13 +702,13 @@ def main() -> int:
 
         config = Config()
 
-        chat = ChatApi(config)
+        ai = AIApi(config)
 
         # init the intent because starting the discord client
         intents = discord.Intents.default()
         intents.message_content = True
 
-        client = ChatDiscord(chat, config, intents=intents)
+        client = ChatDiscord(ai, config, intents=intents)
 
         client.run(config.get("discord", "token"))
 
