@@ -23,7 +23,7 @@ from discord.message import Message
 
 GPT_3_5_COST = 0.002
 GPT_CODE_MODEL = "code-davinci-002"
-GPT_CHAT_MODEL = "gpt-3.5-turbo"
+GPT_CHAT_MODEL = "gpt-3.5-turbo-16k"
 
 
 @dataclass
