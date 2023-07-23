@@ -692,8 +692,8 @@ class ChatDiscord(discord.Client):
 
                 if (rlen > 0):
                     for i in range(0, rlen, DISCORD_MAX_LENGTH):
-                        msg = response[i:i+DISCORD_MAX_LENGTH]
-                        await msg.channel.send(msg)
+                        part = response[i:i+DISCORD_MAX_LENGTH]
+                        await msg.channel.send(part)
 
         except Exception as e:
             await msg.channel.send(f"Exception: {e}")
