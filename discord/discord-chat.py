@@ -25,6 +25,8 @@ GPT_3_5_COST = 0.002
 GPT_CODE_MODEL = "code-davinci-002"
 GPT_CHAT_MODEL = "gpt-3.5-turbo-16k"
 
+DISCORD_MAX_LENGTH = 2000
+
 
 @dataclass
 class ChatResponse:
@@ -686,9 +688,12 @@ class ChatDiscord(discord.Client):
             async with msg.channel.typing():
 
                 response = await self.__msg_handler(msg)
+                rlen = len(response)
 
-                if (len(response) > 0):
-                    await msg.channel.send(response)
+                if (rlen > 0):
+                    for i in range(0, rlen, DISCORD_MAX_LENGTH):
+                        msg = response[i:i+DISCORD_MAX_LENGTH]
+                        await msg.channel.send(msg)
 
         except Exception as e:
             await msg.channel.send(f"Exception: {e}")
