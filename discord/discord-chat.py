@@ -198,7 +198,8 @@ class AIApi:
     def __init__(self, config: Config) -> None:
 
         self.known_models = ["gpt-3.5-turbo",
-                             "code-davinci-002"]
+                             "code-davinci-002",
+                             "gpt-4" ]
 
         self.url = config.get("openai", "url")
         self.key = config.get("openai", "key")
