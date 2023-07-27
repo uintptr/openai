@@ -198,8 +198,9 @@ class AIApi:
     def __init__(self, config: Config) -> None:
 
         self.known_models = ["gpt-3.5-turbo",
+                             "gpt-3.5-turbo-16k",
                              "code-davinci-002",
-                             "gpt-4" ]
+                             "gpt-4"]
 
         self.url = config.get("openai", "url")
         self.key = config.get("openai", "key")
@@ -396,9 +397,11 @@ class ChatDiscord(discord.Client):
     ##################
     async def cmd_model(self, msg: Message) -> str:
 
-        if (0 == len(msg.content)):
-            self.ai.set_model(msg.content)
-            response = f"Model changed to {msg.content}"
+        model = msg.content[6:].strip(" ")
+
+        if (len(model) > 0):
+            self.ai.set_model(model)
+            response = f"Model changed to `{model}`"
         else:
             model = self.ai.get_model()
             response = f"Current model is `{model}`"
