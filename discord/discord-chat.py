@@ -528,7 +528,8 @@ class ChatDiscord(discord.Client):
         else:
             pass  # not supported for DMs
 
-        return "Hello World"
+        model = self.ai.get_model()
+        return f"Hello World (`{model}`)"
 
     ##################
     # PING
