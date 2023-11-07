@@ -200,7 +200,7 @@ class AIApi:
         self.known_models = ["gpt-3.5-turbo",
                              "gpt-3.5-turbo-16k",
                              "code-davinci-002",
-                             "gpt-4"]
+                             "gpt-4-1106-preview"]
 
         self.url = config.get("openai", "url")
         self.key = config.get("openai", "key")
