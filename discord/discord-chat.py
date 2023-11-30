@@ -2,6 +2,7 @@
 
 import sys
 import os
+import io
 import json
 import time
 import copy
@@ -10,13 +11,13 @@ from dataclasses import dataclass
 from typing import Callable, Awaitable
 from datetime import datetime
 import asyncio
+import tempfile
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.chat import ChatCompletionUserMessageParam
 from openai.types.chat import ChatCompletionSystemMessageParam
 from openai.types.chat import ChatCompletionAssistantMessageParam
-import tempfile
 
 import aiohttp
 import discord
@@ -262,6 +263,15 @@ class AIApi:
                 images.append(await download_url(url.url))
 
         return images
+
+    async def speech_to_text(self, file_path: str) -> str:
+
+        with open(file_path, "rb") as f:
+
+            res = await self.client.audio.transcriptions.create(model="whisper-1",
+                                                                file=f)
+
+            return res.text
 
     async def chat(self, history: List[ChatHistory], user: Optional[str] = None) -> ChatResponse:
 
@@ -551,11 +561,22 @@ class ChatDiscord(discord.Client):
 
             ext = os.path.splitext(a.filename)[1].lower()
 
-            content = await a.read()
-
             if (ext.endswith(".txt")):
+                content = await a.read()
                 data += f"consider the following document as {a.filename}\n"
                 data += content.decode("utf-8")
+            elif (ext.endswith(".ogg")):
+
+                with tempfile.TemporaryDirectory(prefix="ogg_") as td:
+                    ogg_file = os.path.join(td, "file.ogg")
+
+                    with open(ogg_file, "wb+") as f:
+                        f.write(await a.read())
+
+                    data = await self.ai.speech_to_text(ogg_file)
+
+                    await msg.channel.send(f"input: {data}")
+
             else:
                 NotImplementedError(f"{ext} is not implemented")
 
@@ -606,10 +627,18 @@ class ChatDiscord(discord.Client):
 
     async def __msg_handler(self, msg: Message) -> str:
 
-        if (msg.content.startswith("/")):
-            response = await self.__command_handler(msg)
-        else:
-            response = await self.__chat_handler(msg)
+        response = ""
+
+        try:
+            if (msg.content.startswith("/")):
+                response = await self.__command_handler(msg)
+            else:
+                response = await self.__chat_handler(msg)
+        except NotImplementedError as e:
+            response = str(e)
+        finally:
+            if ("" == response):
+                response = "some kind of failure"
 
         return response
 
