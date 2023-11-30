@@ -2,16 +2,18 @@
 
 import sys
 import os
-import io
 import json
 import time
 import copy
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Tuple
 from dataclasses import dataclass
 from typing import Callable, Awaitable
 from datetime import datetime
+from enum import Enum
 import asyncio
 import tempfile
+import traceback
+
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -28,6 +30,12 @@ GPT_CODE_MODEL = "code-davinci-002"
 GPT_CHAT_MODEL = "gpt-3.5-turbo-16k"
 
 DISCORD_MAX_LENGTH = 2000
+
+
+class ChatAttachmentType(Enum):
+    NONE = 0
+    TEXT_FILE = 1
+    AUDIO_FILE = 2
 
 
 @dataclass
@@ -272,6 +280,15 @@ class AIApi:
                                                                 file=f)
 
             return res.text
+
+    async def text_to_speech(self, text: str, out_file: str) -> None:
+
+        res = await self.client.audio.speech.create(model="tts-1",
+                                                    voice="onyx",
+                                                    response_format="opus",
+                                                    input=text)
+
+        await res.astream_to_file(out_file)
 
     async def chat(self, history: List[ChatHistory], user: Optional[str] = None) -> ChatResponse:
 
@@ -553,9 +570,10 @@ class ChatDiscord(discord.Client):
     # PRIVATE
     ############################################################################
 
-    async def __load_attachments(self, msg: Message) -> str:
+    async def __load_attachments(self, msg: Message) -> Tuple[ChatAttachmentType, str]:
 
         data: str = ""
+        atype = ChatAttachmentType.NONE
 
         for a in msg.attachments:
 
@@ -565,10 +583,11 @@ class ChatDiscord(discord.Client):
                 content = await a.read()
                 data += f"consider the following document as {a.filename}\n"
                 data += content.decode("utf-8")
+                atype = ChatAttachmentType.TEXT_FILE
             elif (ext.endswith(".ogg")):
 
                 with tempfile.TemporaryDirectory(prefix="ogg_") as td:
-                    ogg_file = os.path.join(td, "file.ogg")
+                    ogg_file = os.path.join(td, "stt.ogg")
 
                     with open(ogg_file, "wb+") as f:
                         f.write(await a.read())
@@ -576,11 +595,11 @@ class ChatDiscord(discord.Client):
                     data = await self.ai.speech_to_text(ogg_file)
 
                     await msg.channel.send(f"input: {data}")
-
+                    atype = ChatAttachmentType.AUDIO_FILE
             else:
                 NotImplementedError(f"{ext} is not implemented")
 
-        return data
+        return atype, data
 
     async def __command_handler(self, msg: Message) -> str:
 
@@ -596,14 +615,11 @@ class ChatDiscord(discord.Client):
     async def __chat_handler(self, msg: Message) -> str:
 
         response = ""
+        atype = ChatAttachmentType.NONE
 
         # load attachments (if any)
         if (len(msg.attachments) > 0):
-            content = await self.__load_attachments(msg)
-
-        elif (msg.content.startswith("http://") or
-                msg.content.startswith("https://")):
-            raise NotImplementedError("URLs are not longer supported")
+            atype, content = await self.__load_attachments(msg)
         else:
             content = msg.content
 
@@ -617,9 +633,17 @@ class ChatDiscord(discord.Client):
             if (len(history) > 0):
                 chat = await self.ai.chat(history, msg.author.name)
 
-                await self.history.add(msg.channel.id,
-                                       "assistant",
-                                       chat.message)
+                await self.history.add(msg.channel.id, "assistant", chat.message)
+
+                if (atype == ChatAttachmentType.AUDIO_FILE):
+
+                    with tempfile.TemporaryDirectory(prefix="tts_") as td:
+
+                        audio_file = os.path.join(td, "tts.ogg")
+
+                        await self.ai.text_to_speech(chat.message, audio_file)
+
+                        await msg.channel.send(file=discord.File(audio_file))
 
                 response = chat.message
 
@@ -634,8 +658,6 @@ class ChatDiscord(discord.Client):
                 response = await self.__command_handler(msg)
             else:
                 response = await self.__chat_handler(msg)
-        except NotImplementedError as e:
-            response = str(e)
         finally:
             if ("" == response):
                 response = "some kind of failure"
@@ -646,7 +668,7 @@ class ChatDiscord(discord.Client):
     # DISCORD CALLBACKS
     ############################################################################
 
-    async def on_ready(self):
+    async def on_ready(self) -> None:
         print('Logged on as', self.user)
 
     async def on_message(self, msg: Message) -> None:
@@ -659,7 +681,12 @@ class ChatDiscord(discord.Client):
 
             async with msg.channel.typing():
 
-                response = await self.__msg_handler(msg)
+                try:
+                    response = await self.__msg_handler(msg)
+                except Exception:
+                    exception_stack = traceback.format_exc()
+                    response = f":crying_cat_face:\n```\n{exception_stack}\n```\n"
+
                 rlen = len(response)
 
                 if (rlen > 0):
