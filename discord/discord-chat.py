@@ -251,24 +251,19 @@ class AIApi:
         config["max_prompt"] = self.max_prompt
         return config
 
-    async def image(self, prompt: str, num: int = 2, size: str = "1024x1024") -> List[bytes]:
+    async def image(self, prompt: str, num: int = 1) -> List[bytes]:
 
-        images = []
+        images: list[bytes] = []
 
         res = await self.client.images.generate(model="dall-e-3",
-                                                prompt="a white siamese cat",
+                                                prompt=prompt,
                                                 size="1024x1024",
                                                 quality="standard",
-                                                n=1)
+                                                n=num)
 
-        print(res)
-        assert False, "TODO"
-
-        res = comp.to_dict()  # type: ignore
-
-        if ("data" in resp):
-            for url in resp["data"]:
-                images.append(await download_url(url.url))
+        for data in res.data:
+            if (data.url is not None):
+                images.append(await download_url(data.url))
 
         return images
 
@@ -356,8 +351,6 @@ class ChatDiscord(discord.Client):
         self.start_time = time.time()
         self.max_age = config.get_int("discord", "max_age")
         self.file_size_max = config.get_int("discord", "file_size_max")
-        self.gmail_email = config.get("gmail", "email")
-        self.gmail_password = config.get("gmail", "password")
 
         self.history = History()
 
@@ -653,14 +646,10 @@ class ChatDiscord(discord.Client):
 
         response = ""
 
-        try:
-            if (msg.content.startswith("/")):
-                response = await self.__command_handler(msg)
-            else:
-                response = await self.__chat_handler(msg)
-        finally:
-            if ("" == response):
-                response = "some kind of failure"
+        if (msg.content.startswith("/")):
+            response = await self.__command_handler(msg)
+        else:
+            response = await self.__chat_handler(msg)
 
         return response
 
