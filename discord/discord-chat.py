@@ -2,23 +2,24 @@
 
 import sys
 import os
-import io
 import json
 import time
 import copy
-from typing import List, Optional
+from typing import List, Optional, Any
 from dataclasses import dataclass
 from typing import Callable, Awaitable
 from datetime import datetime
-import smtplib
 import asyncio
-import openai
+
+from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat import ChatCompletionUserMessageParam
+from openai.types.chat import ChatCompletionSystemMessageParam
+from openai.types.chat import ChatCompletionAssistantMessageParam
 import tempfile
 
 import aiohttp
-from bs4 import BeautifulSoup
 import discord
-import PyPDF2
 from discord.message import Message
 
 GPT_3_5_COST = 0.002
@@ -98,7 +99,7 @@ class History:
     def __init__(self) -> None:
 
         self.history_lock = asyncio.Lock()
-        self.channels = {}
+        self.channels: dict[int, list[ChatHistory]] = {}
 
     async def clear(self, channel_id: int) -> None:
 
@@ -213,7 +214,7 @@ class AIApi:
         self.stats_lock = asyncio.Lock()
         self.config = config
 
-        openai.api_key = self.key
+        self.client = AsyncOpenAI(api_key=self.key)
 
     def __str__(self) -> str:
         return f"model={self.model} system={self.system}"
@@ -232,9 +233,9 @@ class AIApi:
     def get_known_models(self) -> List[str]:
         return self.known_models
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
 
-        config = {}
+        config: dict[str, Any] = {}
         config["model"] = self.model
         config["system"] = self.system
         config["temperature"] = self.temperature
@@ -245,9 +246,16 @@ class AIApi:
 
         images = []
 
-        comp = await openai.Image.acreate(prompt=prompt, n=num, size=size)
+        res = await self.client.images.generate(model="dall-e-3",
+                                                prompt="a white siamese cat",
+                                                size="1024x1024",
+                                                quality="standard",
+                                                n=1)
 
-        resp = comp.to_dict()  # type: ignore
+        print(res)
+        assert False, "TODO"
+
+        res = comp.to_dict()  # type: ignore
 
         if ("data" in resp):
             for url in resp["data"]:
@@ -257,48 +265,54 @@ class AIApi:
 
     async def chat(self, history: List[ChatHistory], user: Optional[str] = None) -> ChatResponse:
 
-        messages = [
-            {"role": "system", "content": self.system}
-        ]
+        messages: list[ChatCompletionMessageParam] = []
+
+        s = ChatCompletionSystemMessageParam(
+            content=self.system, role="system")
+
+        messages.append(s)
 
         history = history[-self.max_prompt:]
 
         for h in history:
-            message = {"role": h.role, "content": h.content}
-            messages.append(message)
+
+            if ("user" == h.role):
+                m = ChatCompletionUserMessageParam(
+                    content=h.content, role="user")
+            else:
+                m = ChatCompletionAssistantMessageParam(
+                    content=h.content, role="assistant")
+
+            messages.append(m)
 
         create_ts = time.time()
 
-        completion = await openai.ChatCompletion.acreate(model=self.model,
+        comp = await self.client.chat.completions.create(model=self.model,
                                                          temperature=self.temperature,
                                                          messages=messages)
 
         response_ts = time.time()
 
-        data = completion.to_dict()  # type: ignore
-
         id = ""
         message = ""
 
-        if ("usage" in data):
-            usage = data["usage"]
-            prompts = usage["prompt_tokens"]
-            completions = usage["completion_tokens"]
+        if (comp.usage is not None):
+            prompts = comp.usage.prompt_tokens
+            completions = comp.usage.completion_tokens
 
             async with self.stats_lock:
                 self.stats.update(prompts, completions)
 
-        if ("id" in data):
-            id = data["id"]
+        id = comp.id
 
-        if ("choices" in data):
-            message = data["choices"][0]["message"]["content"]
-        elif ("error" in data):
-            message = data["error"]["message"]
+        if (comp.choices[0].message.content is not None):
+            message = comp.choices[0].message.content
+        else:
+            message = "empty response from completions API"
 
         return ChatResponse(create_ts, response_ts, id, message)
 
-    def update_system(self, system: str):
+    def update_system(self, system: str) -> None:
         self.system = system
 
     async def get_stats(self) -> ChatStats:
@@ -308,7 +322,7 @@ class AIApi:
 
 class ChatDiscord(discord.Client):
 
-    def __init__(self, ai: AIApi, config: Config, *args, **kwargs) -> None:
+    def __init__(self, ai: AIApi, config: Config, *args: Any, **kwargs: Any) -> None:
 
         self.ai = ai
         self.bot_token = config.get("discord", "token")
@@ -327,21 +341,19 @@ class ChatDiscord(discord.Client):
             CommandHandler("reset", self.cmd_clear, "Clear Message History"),
             CommandHandler("config", self.cmd_config, "Display Server Config"),
             CommandHandler("uptime", self.cmd_uptime, "Display Server uptime"),
-            CommandHandler("email", self.cmd_email, "Email Logs"),
             CommandHandler("stats", self.cmd_stats, "Stats for nerds"),
             CommandHandler("history", self.cmd_history, "Display history"),
             CommandHandler("model", self.cmd_model, "Get and set model"),
             CommandHandler("models", self.cmd_models, "List models"),
-            CommandHandler("code", self.cmd_code, "Switch to code model"),
             CommandHandler("chat", self.cmd_chat, "Switch to chat model"),
             CommandHandler("image", self.cmd_image, "Generate an image"),
         ]
 
         super().__init__(*args, **kwargs)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
 
-        config = {}
+        config: dict[str, Any] = {}
         config["max_age"] = self.max_age
         config["file_size_max"] = self.file_size_max
 
@@ -377,13 +389,6 @@ class ChatDiscord(discord.Client):
             i += 1
 
         return ""
-    ##################
-    # CODE
-    ##################
-
-    async def cmd_code(self, msg: Message) -> str:
-        self.ai.set_model(GPT_CODE_MODEL)
-        return f"Changed model to `{GPT_CODE_MODEL}`"
 
     ##################
     # CHAT
@@ -470,34 +475,6 @@ class ChatDiscord(discord.Client):
         return response
 
     ##################
-    # EMAIL
-    ##################
-    async def cmd_email(self, msg: Message) -> str:
-
-        response = ""
-        content = msg.content.split(' ')
-
-        if (2 == len(content)):
-
-            recipient = content[1]
-
-            with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(self.gmail_email, self.gmail_password)
-
-                message = "message"
-                subject = "subject"
-                body = "Subject: {}\n\n{}".format(subject, message)
-
-                server.sendmail("your_email@gmail.com", recipient, body)
-        else:
-            response = "Usage:\n/email dest@email.com"
-
-        return response
-
-    ##################
     # UPTIME
     ##################
     async def cmd_uptime(self, msg: Message) -> str:
@@ -565,23 +542,10 @@ class ChatDiscord(discord.Client):
     ############################################################################
     # PRIVATE
     ############################################################################
-    def __load_pdf(self, content: bytes) -> str:
 
-        pdf_content = ""
+    async def __load_attachments(self, msg: Message) -> str:
 
-        with io.BytesIO(content) as f:
-            reader = PyPDF2.PdfReader(f)
-
-            for i in range(len(reader.pages)):
-
-                page = reader.pages[i]
-                pdf_content += page.extract_text()
-
-        return pdf_content
-
-    async def __load_attachments(self, msg) -> str:
-
-        data = ""
+        data: str = ""
 
         for a in msg.attachments:
 
@@ -589,39 +553,13 @@ class ChatDiscord(discord.Client):
 
             content = await a.read()
 
-            data += f"consider the following document as {a.filename}\n"
-
             if (ext.endswith(".txt")):
-                data += content.encode("utf-8")
-            elif (ext.endswith(".pdf")):
-                data += self.__load_pdf(content)
+                data += f"consider the following document as {a.filename}\n"
+                data += content.decode("utf-8")
+            else:
+                NotImplementedError(f"{ext} is not implemented")
 
         return data
-
-    def __parse_html(self, html_content) -> str:
-
-        soup = BeautifulSoup(html_content, 'html.parser')
-        # You can perform further parsing or extraction here
-        # For example, you can find elements using soup.find() or soup.find_all()
-        return soup.get_text()
-
-    async def __download_page(self, url) -> str:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                html_content = await response.text()
-                return html_content
-
-    async def __load_url(self, msg) -> str:
-
-        url = msg.content
-
-        html_content = await self.__download_page(url)
-
-        html_text = f"consider the follow data as {url}\n\n"
-
-        html_text += self.__parse_html(html_content)
-
-        return html_text
 
     async def __command_handler(self, msg: Message) -> str:
 
@@ -644,7 +582,7 @@ class ChatDiscord(discord.Client):
 
         elif (msg.content.startswith("http://") or
                 msg.content.startswith("https://")):
-            content = await self.__load_url(msg)
+            raise NotImplementedError("URLs are not longer supported")
         else:
             content = msg.content
 
@@ -682,7 +620,7 @@ class ChatDiscord(discord.Client):
     async def on_ready(self):
         print('Logged on as', self.user)
 
-    async def on_message(self, msg):
+    async def on_message(self, msg: Message) -> None:
 
         # ignore self
         if msg.author == self.user:
