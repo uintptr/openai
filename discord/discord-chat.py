@@ -665,9 +665,6 @@ class ChatDiscord(discord.Client):
         if msg.author == self.user:
             return
 
-        async with self._last_chat_ts_lock:
-            self._last_chat_ts = time.time()
-
         try:
 
             async with msg.channel.typing():
