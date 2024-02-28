@@ -5,7 +5,7 @@ import os
 import json
 import time
 import copy
-from typing import List, Optional, Any, Tuple
+from typing import Any
 from dataclasses import dataclass
 from typing import Callable, Awaitable
 from datetime import datetime
@@ -13,7 +13,6 @@ from enum import Enum
 import asyncio
 import tempfile
 import traceback
-
 
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -127,7 +126,7 @@ class History:
             entry = ChatHistory(role, content, ts)
             self.channels[channel_id].append(entry)
 
-    async def get(self, channel_id: int, max: int = 10) -> List[ChatHistory]:
+    async def get(self, channel_id: int, max: int = 10) -> list[ChatHistory]:
 
         async with self.history_lock:
             if (channel_id in self.channels):
@@ -159,7 +158,7 @@ class Config:
         with open(self.config_file, "w+") as f:
             f.write(json.dumps(self.config, indent=4))
 
-    def get(self, component: str, key: str, default: Optional[str] = None) -> str:
+    def get(self, component: str, key: str, default: str | None = None) -> str:
 
         if (component in self.config):
             if (key in self.config[component]):
@@ -172,7 +171,7 @@ class Config:
 
         raise ConfigNotFound(f"{key} is not defined")
 
-    def get_int(self, component: str, key: str, default: Optional[int] = None) -> int:
+    def get_int(self, component: str, key: str, default: int | None = None) -> int:
 
         default_str = None
 
@@ -183,7 +182,7 @@ class Config:
 
         return int(self.get(component, key, default_str))
 
-    def get_float(self, component: str, key: str, default: Optional[float] = None) -> float:
+    def get_float(self, component: str, key: str, default: float | None = None) -> float:
 
         default_str = None
 
@@ -239,7 +238,7 @@ class AIApi:
         else:
             raise ChatModelNotFound(f'unknown model "{model}"')
 
-    def get_known_models(self) -> List[str]:
+    def get_known_models(self) -> list[str]:
         return self.known_models
 
     def to_dict(self) -> dict[str, Any]:
@@ -251,7 +250,7 @@ class AIApi:
         config["max_prompt"] = self.max_prompt
         return config
 
-    async def image(self, prompt: str, num: int = 1) -> List[bytes]:
+    async def image(self, prompt: str, num: int = 1) -> list[bytes]:
 
         images: list[bytes] = []
 
@@ -273,19 +272,18 @@ class AIApi:
 
             res = await self.client.audio.transcriptions.create(model="whisper-1",
                                                                 file=f)
-
             return res.text
 
     async def text_to_speech(self, text: str, out_file: str) -> None:
 
         res = await self.client.audio.speech.create(model="tts-1",
                                                     voice="onyx",
-                                                    response_format="opus",
+                                                    response_format="aac",
                                                     input=text)
 
         await res.astream_to_file(out_file)
 
-    async def chat(self, history: List[ChatHistory], user: Optional[str] = None) -> ChatResponse:
+    async def chat(self, history: list[ChatHistory], user: str | None = None) -> ChatResponse:
 
         messages: list[ChatCompletionMessageParam] = []
 
@@ -354,7 +352,7 @@ class ChatDiscord(discord.Client):
 
         self.history = History()
 
-        self.handlers: List[CommandHandler] = [
+        self.handlers: list[CommandHandler] = [
             CommandHandler("help", self.cmd_help, "This command"),
             CommandHandler("ping", self.cmd_ping, "Display Pong"),
             CommandHandler("clear", self.cmd_clear, "Clear Message History"),
@@ -532,7 +530,7 @@ class ChatDiscord(discord.Client):
     # PING
     ##################
     async def cmd_ping(self, msg: Message) -> str:
-        return f"whatup {msg.author.mention} :stuck_out_tongue_winking_eye:"
+        return f"whatup {msg.author.mention} ? :stuck_out_tongue_winking_eye:"
 
     ##################
     # HELP
@@ -563,7 +561,7 @@ class ChatDiscord(discord.Client):
     # PRIVATE
     ############################################################################
 
-    async def __load_attachments(self, msg: Message) -> Tuple[ChatAttachmentType, str]:
+    async def __load_attachments(self, msg: Message) -> tuple[ChatAttachmentType, str]:
 
         data: str = ""
         atype = ChatAttachmentType.NONE
@@ -580,12 +578,12 @@ class ChatDiscord(discord.Client):
             elif (ext.endswith(".ogg")):
 
                 with tempfile.TemporaryDirectory(prefix="ogg_") as td:
-                    ogg_file = os.path.join(td, "stt.ogg")
+                    input_ogg_file = os.path.join(td, "stt.ogg")
 
-                    with open(ogg_file, "wb+") as f:
+                    with open(input_ogg_file, "wb+") as f:
                         f.write(await a.read())
 
-                    data = await self.ai.speech_to_text(ogg_file)
+                    data = await self.ai.speech_to_text(input_ogg_file)
 
                     await msg.channel.send(f"input: {data}")
                     atype = ChatAttachmentType.AUDIO_FILE
@@ -616,29 +614,30 @@ class ChatDiscord(discord.Client):
         else:
             content = msg.content
 
-        if (len(content) > 0):
+        if (content == ""):
+            return ""
 
-            await self.history.add(msg.channel.id, "user", content)
+        await self.history.add(msg.channel.id, "user", content)
 
-            history = await self.history.get(msg.channel.id,
-                                             self.ai.max_prompt)
+        history = await self.history.get(msg.channel.id,
+                                         self.ai.max_prompt)
 
-            if (len(history) > 0):
-                chat = await self.ai.chat(history, msg.author.name)
+        if (len(history) > 0):
+            chat = await self.ai.chat(history, msg.author.name)
 
-                await self.history.add(msg.channel.id, "assistant", chat.message)
+            await self.history.add(msg.channel.id, "assistant", chat.message)
 
-                if (atype == ChatAttachmentType.AUDIO_FILE):
+            if (atype == ChatAttachmentType.AUDIO_FILE):
 
-                    with tempfile.TemporaryDirectory(prefix="tts_") as td:
+                with tempfile.TemporaryDirectory(prefix="tts_") as td:
 
-                        audio_file = os.path.join(td, "tts.ogg")
+                    audio_file = os.path.join(td, "tts.aac")
 
-                        await self.ai.text_to_speech(chat.message, audio_file)
+                    await self.ai.text_to_speech(chat.message, audio_file)
 
-                        await msg.channel.send(file=discord.File(audio_file))
+                    await msg.channel.send(file=discord.File(audio_file))
 
-                response = chat.message
+            response = chat.message
 
         return response
 
@@ -666,6 +665,9 @@ class ChatDiscord(discord.Client):
         if msg.author == self.user:
             return
 
+        async with self._last_chat_ts_lock:
+            self._last_chat_ts = time.time()
+
         try:
 
             async with msg.channel.typing():
@@ -674,7 +676,8 @@ class ChatDiscord(discord.Client):
                     response = await self.__msg_handler(msg)
                 except Exception:
                     exception_stack = traceback.format_exc()
-                    response = f":crying_cat_face:\n```\n{exception_stack}\n```\n"
+                    response = ":crying_cat_face:\n"
+                    response += f"```\n{exception_stack}\n```\n"
 
                 rlen = len(response)
 
@@ -687,7 +690,7 @@ class ChatDiscord(discord.Client):
             await msg.channel.send(f"Exception: {e}")
 
 
-def main() -> int:
+async def amain() -> int:
 
     status = 1
 
@@ -701,13 +704,16 @@ def main() -> int:
         intents = discord.Intents.default()
         intents.message_content = True
 
-        client = ChatDiscord(ai, config, intents=intents)
+        async with ChatDiscord(ai, config, intents=intents) as client:
+            await client.start(config.get("discord", "token"))
 
-        client.run(config.get("discord", "token"))
+        #
+        # await asyncio.gather(
+        #    asyncio.to_thread(
+        # asyncio.sleep(1))
 
         status = 0
-    except KeyboardInterrupt:
-        status = 0
+
     except ConfigNotFound as e:
         print(e)
 
@@ -716,7 +722,10 @@ def main() -> int:
 
 if __name__ == '__main__':
 
-    status = main()
+    try:
+        status = asyncio.run(amain())
+    except KeyboardInterrupt:
+        status = 1
 
     if status != 0:
         sys.exit(status)
