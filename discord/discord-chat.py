@@ -333,8 +333,12 @@ class AIApi:
 
         return ChatResponse(create_ts, response_ts, id, message)
 
-    def update_system(self, system: str) -> None:
+    def get_prompt(self) -> str:
+        return self.system
+
+    def set_prompt(self, system: str) -> None:
         self.system = system
+        self.config.set("openai", "system", system)
 
     async def get_stats(self) -> ChatStats:
         async with self.stats_lock:
@@ -366,6 +370,7 @@ class ChatDiscord(discord.Client):
             CommandHandler("models", self.cmd_models, "List models"),
             CommandHandler("chat", self.cmd_chat, "Switch to chat model"),
             CommandHandler("image", self.cmd_image, "Generate an image"),
+            CommandHandler("prompt", self.cmd_prompt, "Change the prompt")
         ]
 
         super().__init__(*args, **kwargs)
@@ -381,6 +386,15 @@ class ChatDiscord(discord.Client):
     ############################################################################
     # COMMANDS
     ############################################################################
+
+    ##################
+    # PROMPT
+    ##################
+    async def cmd_prompt(self, msg: Message) -> str:
+
+        if "" != msg.content:
+            self.ai.set_prompt(msg.content)
+        return self.ai.get_prompt()
 
     ##################
     # IMAGE
@@ -421,7 +435,7 @@ class ChatDiscord(discord.Client):
     ##################
     async def cmd_model(self, msg: Message) -> str:
 
-        model = msg.content[6:].strip(" ")
+        model = msg.content
 
         if (len(model) > 0):
             self.ai.set_model(model)
@@ -600,6 +614,9 @@ class ChatDiscord(discord.Client):
         for h in self.handlers:
 
             if (cmd == h.name):
+                cmd_len = len(cmd) + 1  # for the leading /
+                msg.content = msg.content[cmd_len:]
+                msg.content = msg.content.lstrip()
                 return await h.handler(msg)
 
         return "command not found"
@@ -646,7 +663,10 @@ class ChatDiscord(discord.Client):
 
         response = ""
 
-        if (msg.content.startswith("/")):
+        if msg.content.startswith("/"):
+            response = await self.__command_handler(msg)
+        elif msg.content == "reset":
+            msg.content = "/" + msg.content
             response = await self.__command_handler(msg)
         else:
             response = await self.__chat_handler(msg)
