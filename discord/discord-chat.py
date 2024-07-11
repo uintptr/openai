@@ -665,7 +665,7 @@ class ChatDiscord(discord.Client):
 
         if msg.content.startswith("/"):
             response = await self.__command_handler(msg)
-        elif msg.content == "reset":
+        elif msg.content.lower() == "reset":
             msg.content = "/" + msg.content
             response = await self.__command_handler(msg)
         else:
